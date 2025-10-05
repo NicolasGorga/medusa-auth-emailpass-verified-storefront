@@ -10,7 +10,7 @@ type Props = {
 }
 
 const Login = ({ setCurrentView }: Props) => {
-  const [message, formAction] = useActionState(login, null)
+  const [result, formAction] = useActionState(login, null)
 
   return (
     <div
@@ -41,7 +41,8 @@ const Login = ({ setCurrentView }: Props) => {
             data-testid="password-input"
           />
         </div>
-        <ErrorMessage error={message} data-testid="login-error-message" />
+        {typeof result === 'string' && <ErrorMessage error={result} data-testid="login-error-message" />}
+        {typeof result === 'object' && <p>{result?.message}</p>}
         <SubmitButton data-testid="sign-in-button" className="w-full mt-6">
           Sign in
         </SubmitButton>

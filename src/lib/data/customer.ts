@@ -14,6 +14,7 @@ import {
   removeCartId,
   setAuthToken,
 } from "./cookies"
+import { decode } from "punycode"
 
 export const retrieveCustomer =
   async (): Promise<HttpTypes.StoreCustomer | null> => {
@@ -108,22 +109,84 @@ export async function login(_currentState: unknown, formData: FormData) {
   const email = formData.get("email") as string
   const password = formData.get("password") as string
 
+  let loginResult: string | { location: string }
   try {
-    await sdk.auth
-      .login("customer", "emailpass", { email, password })
-      .then(async (token) => {
-        await setAuthToken(token as string)
-        const customerCacheTag = await getCacheTag("customers")
-        revalidateTag(customerCacheTag)
-      })
+    loginResult = await sdk.auth
+      .login("customer", "emailpass-verified", { email, password, callback_url: `${process.env.NEXT_PUBLIC_BASE_URL}/auth/emailpass-verified/customer` })
   } catch (error: any) {
     return error.toString()
   }
+
+  if (typeof loginResult !== 'string') {
+    return {
+      success: true,
+      message: 'A verification request was sent to your email'
+    }
+  }
+
+  await setAuthToken(loginResult)
+  const customerCacheTag = await getCacheTag("customers")
+  revalidateTag(customerCacheTag)
 
   try {
     await transferCart()
   } catch (error: any) {
     return error.toString()
+  }
+}
+
+export async function validateCallback(queryParams: Record<string, string>) {
+  try {
+    const token = await sdk.auth.callback(
+      "customer",
+      "emailpass-verified",
+      queryParams
+    )
+
+    await setAuthToken(token)
+
+    const decoded = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString()) as {
+      actor_id: string
+      user_metadata?: {
+        email: string
+      }
+    }
+
+    const shouldCreateCustomer = decoded?.actor_id === ""
+
+    if (shouldCreateCustomer) {
+      // TODO: after 2.10.4 is released, the queryParams.email fallback can be removed as user_metadata will be returned in JWT
+      const email = decoded.user_metadata?.email ?? queryParams.email
+      if (!email) {
+        throw new Error('Unable to create customer, email not found in user_metadata')
+      }
+
+      await sdk.store.customer.create({ email }, undefined, {
+        ...(await getAuthHeaders())
+      })
+
+      // const refreshedToken = await sdk.auth.refresh()
+      // TODO: Remove the line below and uncomment the one above after https://github.com/medusajs/medusa/pull/13690 is merged
+      const { token: refreshedToken } = await sdk.client.fetch<{token: string}>('/auth/token/refresh', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+
+      await setAuthToken(refreshedToken as string)
+    }
+
+    const customerCacheTag = await getCacheTag("customers")
+    revalidateTag(customerCacheTag)
+
+    const { customer } = await sdk.store.customer.retrieve({}, {
+      ...(await getAuthHeaders())
+    })
+
+    return { success: true, customer }
+  } catch (error: any) {
+    return { success: false, error: error.toString() }
   }
 }
 
